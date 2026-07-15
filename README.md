@@ -1,15 +1,20 @@
 # usage-badge
 
-A tiny self-hosted README badge showing your AI agent usage: Claude
-subscription window usage (5-hour / weekly %, when you're on the sub), plus
-estimated tokens and cost across your agents (Claude Code, Codex, and anything
-you add). A toy — one Cloudflare Worker (free tier), one stdlib-only Python
-script, no dependencies anywhere.
+A tiny self-hosted README badge showing your AI agent usage: live Claude and
+Codex subscription window usage, plus estimated tokens and cost across your
+agents (Claude Code, Codex, Ollama, and anything you add). A toy — one
+Cloudflare Worker (free tier) and stdlib-only Python collectors.
 
-> **Why no Codex %?** Codex has no clean live usage endpoint — its rate-limit
-> numbers are stale per-session snapshots on the wrong window. Rather than show
-> misleading data, the badge reports Codex *token totals* only. See
-> [docs/spec.md](docs/spec.md).
+Data sources, each using the cleanest available method (no scraping):
+
+- **Claude usage %** — live via your Claude Code OAuth login (auto-refreshed).
+- **Codex usage %** — live via [CodexBar](https://github.com/steipete/codexbar)'s
+  official OAuth source (optional; `brew install codexbar`).
+- **Tokens & cost** — parsed from local Claude Code / Codex session logs.
+- **Ollama** — a local metering proxy, since Ollama keeps no token log and
+  Ollama Cloud has no usage API (see below).
+
+Full design + security + edge cases: [docs/spec.md](docs/spec.md).
 
 ![usage badge](https://usage-badge.stockgenie.workers.dev/badge.svg)
 
@@ -25,8 +30,6 @@ Python you can read in five minutes: [collector/collect.py](collector/collect.py
 ```
 your machine ──POST (bearer token)──▶ worker + KV ──GET /badge.svg──▶ README
 ```
-
-Full design + security notes + edge cases: [docs/spec.md](docs/spec.md).
 
 ## Host your own
 
@@ -52,6 +55,20 @@ Full design + security notes + edge cases: [docs/spec.md](docs/spec.md).
    ```md
    ![usage](https://usage-badge.<your-acct>.workers.dev/badge.svg)
    ```
+
+### Optional: meter Ollama
+
+Ollama keeps no token log, so to count its usage run the metering proxy and
+point your apps at it:
+
+```sh
+OLLAMA_TARGET=http://localhost:11434 python3 collector/ollama_meter.py  # or https://ollama.com for Cloud
+# then set your app's Ollama URL to http://localhost:11435
+```
+
+It forwards every request unchanged and tallies only the token counts Ollama
+returns — never your prompts or completions. `com.usage-badge.ollama-meter.plist`
+runs it as a launchd service. The collector reads the tally automatically.
 
 Want tokens but not dollars on a public profile? Omit `cost_usd` — the badge
 hides the column. Extra agents (ollama, raw API keys, anything) go in

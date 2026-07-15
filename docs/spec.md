@@ -29,23 +29,33 @@ your machine                      cloudflare                  github
 | Claude Code tokens/cost | `~/.claude/projects/**/*.jsonl` — sum `message.usage`, dedup by `(message.id, requestId)`, cost from a public pricing table |
 | Codex tokens | `~/.codex/sessions/**/*.jsonl` — last `total_token_usage` per session file (cumulative), summed |
 | Claude sub 5h/weekly % | Anthropic OAuth **usage-reporting** endpoint (`api.anthropic.com/api/oauth/usage`, fields `five_hour.utilization` / `seven_day.utilization`) using the local Claude Code login. Read-only, zero-cost, never runs a model; the credential is never uploaded. If the stored access token is expired, the collector refreshes it via `platform.claude.com/v1/oauth/token` with the stored refresh token (Claude Code's own client id) and writes the rotated tokens back to `~/.claude/.credentials.json` so Claude Code stays in sync. |
-| ~~Codex 5h/weekly %~~ | **Intentionally not shown.** Codex only emits rate-limit numbers as per-session snapshots piggybacked on inference responses. They go stale the instant a session ends, the freshest record is often `null`, and the windows (5h/weekly) don't even match what the CLI reports (monthly on Pro/Pro-Lite). There is no clean, read-only live endpoint. Showing a two-week-old snapshot as "current" would be lying, so we don't. Live Codex usage: chatgpt.com/codex/settings/usage. |
+| Codex usage % (live) | [CodexBar](https://github.com/steipete/codexbar) (`brew install codexbar`): `codexbar usage --provider codex --source oauth --format json`. Uses your Codex OAuth token against OpenAI's official usage endpoint — returns the live window(s) (`usedPercent` + `windowMinutes`, e.g. monthly on Pro-Lite), not the stale per-session log snapshots. Bar labels are derived from `windowMinutes` (300→5h, 10080→wk, 43200→mo) so plan changes don't break the badge. Used only when CodexBar is installed; absent → no Codex bar. |
+| Ollama tokens | Local metering proxy (`collector/ollama_meter.py`). Ollama keeps no token log and Ollama Cloud has no usage API, so the proxy sits in front of Ollama, forwards requests unchanged, and tallies the `prompt_eval_count`/`eval_count` Ollama already returns into `~/.config/usage-badge/ollama-tally.json`. Point your apps' Ollama URL at the proxy to meter them. Counts integers only — never reads or stores prompts/completions. |
+| Other providers | `~/.config/usage-badge/extra.json` — hand-maintained entries for anything with no readable source. |
 | Other agents (ollama, claude api, …) | optional `extra.json` next to the collector — you fill in numbers however you like |
 
 ## Ingest payload (the only thing that leaves your machine)
 
 ```json
 {
-  "sub": {"claude_5h": 42.0, "claude_wk": 61.0, "codex_5h": 20.0, "codex_wk": 56.0},
+  "sub": [
+    {"label": "claude 5h", "pct": 6.0},
+    {"label": "claude wk", "pct": 3.0},
+    {"label": "codex mo",  "pct": 100}
+  ],
   "agents": [
     {"label": "claude code", "tokens": 1234567890, "cost_usd": 312.4},
-    {"label": "codex",       "tokens": 111222333,  "cost_usd": 41.0}
+    {"label": "codex",       "tokens": 111222333,  "cost_usd": 41.0},
+    {"label": "ollama",      "tokens": 656,         "cost_usd": 0.0}
   ]
 }
 ```
 
-Percentages may be `null` (source unavailable). Costs are estimates from public
-pricing tables; the badge labels them "est".
+`sub` is a flexible list of labeled bars (window labels are collector-supplied,
+so 5h/weekly/monthly plan differences never break rendering). The worker
+sanitizes every field: pct clamped 0–100, labels whitelisted, list lengths
+capped. Costs are estimates from public pricing tables; the badge labels them
+"est".
 
 ## Worker behavior
 

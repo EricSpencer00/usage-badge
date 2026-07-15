@@ -14,7 +14,7 @@ Setup:
 Optional extra agents (ollama, claude api, ...): ~/.config/usage-badge/extra.json
   [{"label": "ollama cloud", "tokens": 12345678, "cost_usd": 0}]
 """
-import json, os, sys, time, urllib.request
+import json, os, shutil, subprocess, sys, time, urllib.request
 from pathlib import Path
 
 HOME = Path.home()
@@ -86,13 +86,9 @@ def claude_code_totals(cache):
 
 # --- Codex: cumulative token totals from session logs -----------------------
 #
-# NOTE: Codex does NOT expose a reliable live subscription-usage figure. The
-# rate_limits in the session logs are per-session snapshots piggybacked on
-# inference responses — they go stale the moment a session ends, the windows
-# (5h/weekly) don't match what the CLI shows (monthly on some plans), and the
-# freshest record is often null. Presenting them as "current" would be lying,
-# so we deliberately DON'T. Only cumulative token totals (which are accurate)
-# are reported. Live Codex usage lives at chatgpt.com/codex/settings/usage.
+# Token totals come from logs (accurate). Codex's *live usage %* is fetched
+# separately via CodexBar's OAuth source (see codex_usage_bars) rather than
+# scraped from the stale per-session rate_limit snapshots in these logs.
 
 def codex_totals():
     root = HOME / ".codex" / "sessions"
@@ -183,6 +179,58 @@ def claude_sub_usage():
     except Exception:
         return None, None
 
+# --- CodexBar: live Codex usage + accurate multi-provider cost --------------
+#
+# CodexBar (github.com/steipete/codexbar, `brew install codexbar`) is a
+# maintained tool that fetches Codex usage via the official OAuth token and
+# computes per-provider token/cost from local logs with correct per-model
+# pricing. We shell out to it when present and degrade to stdlib parsing when
+# not — so forks without CodexBar still work.
+
+def _codexbar():
+    return shutil.which("codexbar")
+
+def _run_codexbar(args, timeout=30):
+    try:
+        out = subprocess.run([_codexbar(), *args], capture_output=True,
+                             text=True, timeout=timeout)
+        return json.loads(out.stdout) if out.returncode == 0 and out.stdout.strip() else None
+    except Exception:
+        return None
+
+_WINDOW_LABEL = {300: "5h", 1440: "day", 10080: "wk", 43200: "mo"}
+
+def codex_usage_bars():
+    """Live Codex subscription bars via CodexBar's OAuth source, or []."""
+    if not _codexbar():
+        return []
+    data = _run_codexbar(["usage", "--provider", "codex", "--source", "oauth",
+                          "--format", "json"])
+    if not isinstance(data, list):
+        return []
+    bars = []
+    for entry in data:
+        u = (entry or {}).get("usage") or {}
+        for slot in ("primary", "secondary"):
+            w = u.get(slot)
+            if not isinstance(w, dict) or w.get("usedPercent") is None:
+                continue
+            lbl = _WINDOW_LABEL.get(w.get("windowMinutes"), slot)
+            bars.append({"label": f"codex {lbl}", "pct": w["usedPercent"]})
+    return bars
+
+# --- Ollama: read the local metering proxy's tally --------------------------
+
+def ollama_agent():
+    try:
+        t = json.loads((CONF / "ollama-tally.json").read_text())
+    except Exception:
+        return None
+    if not t.get("tokens"):
+        return None
+    return {"label": "ollama", "tokens": int(t["tokens"]),
+            "cost_usd": round(float(t.get("cost_usd") or 0), 2)}
+
 # --- main -------------------------------------------------------------------
 
 def main():
@@ -191,27 +239,35 @@ def main():
     except Exception:
         cache = {}
 
+    # Per-provider token/cost from local logs (both providers, with pricing).
+    # CodexBar's cost output is provider-incomplete and priceless on some setups,
+    # so the stdlib parser is the primary source here; CodexBar is used only for
+    # live Codex usage % below (the one thing it does that logs can't).
     agents = []
-    cc = claude_code_totals(cache)
-    if cc:
-        agents.append(cc)
-    codex_agent = codex_totals()
-    if codex_agent:
-        agents.append(codex_agent)
-    try:
+    for fn in (lambda: claude_code_totals(cache), codex_totals):
+        a = fn()
+        if a:
+            agents.append(a)
+    oa = ollama_agent()
+    if oa:
+        agents.append(oa)
+    try:  # user-supplied extras (other providers with no readable source)
         extra = json.loads((CONF / "extra.json").read_text())
         agents += [a for a in extra if isinstance(a, dict)][:4]
     except Exception:
         pass
 
-    # Only Claude exposes a reliable live usage endpoint. Codex intentionally
-    # omitted — see codex_totals() note. codex_* kept as null for schema stability.
+    # Subscription bars: Claude via OAuth (live), Codex via CodexBar (live).
+    # Labels are dynamic so plan/window changes (5h/weekly/monthly) never break.
+    sub = []
     claude_5h, claude_wk = claude_sub_usage()
-    payload = {
-        "sub": {"claude_5h": claude_5h, "claude_wk": claude_wk,
-                "codex_5h": None, "codex_wk": None},
-        "agents": agents,
-    }
+    if claude_5h is not None:
+        sub.append({"label": "claude 5h", "pct": claude_5h})
+    if claude_wk is not None:
+        sub.append({"label": "claude wk", "pct": claude_wk})
+    sub += codex_usage_bars()
+
+    payload = {"sub": sub, "agents": agents[:6]}
 
     CONF.mkdir(parents=True, exist_ok=True)
     CACHE.write_text(json.dumps(cache))

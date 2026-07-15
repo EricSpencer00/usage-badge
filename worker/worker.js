@@ -41,12 +41,15 @@ async function ingest(request, env) {
 
   // Rebuild the payload field by field; nothing from the wire is trusted.
   const data = {
-    sub: {
-      claude_5h: pct(raw?.sub?.claude_5h),
-      claude_wk: pct(raw?.sub?.claude_wk),
-      codex_5h: pct(raw?.sub?.codex_5h),
-      codex_wk: pct(raw?.sub?.codex_wk),
-    },
+    // sub: flexible list of labeled usage bars (windows vary by plan, so labels
+    // are collector-supplied rather than hardcoded). e.g. [{label,pct}].
+    sub: (Array.isArray(raw?.sub) ? raw.sub : [])
+      .slice(0, 5)
+      .map((b) => ({
+        label: String(b?.label ?? "").toLowerCase().replace(/[^a-z0-9 ._-]/g, "").slice(0, 16),
+        pct: pct(b?.pct),
+      }))
+      .filter((b) => b.label && b.pct != null),
     agents: (Array.isArray(raw?.agents) ? raw.agents : [])
       .slice(0, 6)
       .map((a) => ({
@@ -110,21 +113,16 @@ function renderSvg(data) {
   const ageMs = Date.now() - data.updated_at;
   const stale = ageMs > STALE_MS;
 
-  // left: subscription usage bars
-  const bars = [
-    ["claude 5h", data.sub.claude_5h],
-    ["claude wk", data.sub.claude_wk],
-    ["codex 5h", data.sub.codex_5h],
-    ["codex wk", data.sub.codex_wk],
-  ].filter(([, v]) => v != null);
+  // left: subscription usage bars (collector-supplied labels)
+  const bars = (Array.isArray(data.sub) ? data.sub : []).slice(0, 5);
 
   parts.push(txt(16, 22, "subscription usage", C.dim, 10));
   if (bars.length === 0) parts.push(txt(16, 44, "—", C.dim, 12));
-  bars.forEach(([label, v], i) => {
+  bars.forEach((b, i) => {
     const y = 33 + i * 13;
-    parts.push(txt(16, y + 8, label, C.text, 10));
-    parts.push(bar(78, y, 160, 7, v, stale));
-    parts.push(txt(246, y + 8, `${Math.round(v)}%`, C.dim, 10));
+    parts.push(txt(16, y + 8, b.label, C.text, 10));
+    parts.push(bar(88, y, 150, 7, b.pct, stale));
+    parts.push(txt(246, y + 8, `${Math.round(b.pct)}%`, C.dim, 10));
   });
 
   // right: per-agent tokens + cost
