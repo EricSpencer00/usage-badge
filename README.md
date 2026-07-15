@@ -1,9 +1,18 @@
 # usage-badge
 
-A tiny self-hosted README badge showing your AI agent usage: live Claude and
-Codex subscription window usage, plus estimated tokens and cost across your
-agents (Claude Code, Codex, Ollama, and anything you add). A toy — one
-Cloudflare Worker (free tier) and stdlib-only Python collectors.
+[![license](https://img.shields.io/github/license/EricSpencer00/usage-badge?color=0A66C2)](LICENSE)
+[![Cloudflare Workers](https://img.shields.io/badge/runs%20on-Cloudflare%20Workers-F38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
+[![dependencies](https://img.shields.io/badge/dependencies-none-3fb950)](collector/collect.py)
+![python](https://img.shields.io/badge/python-stdlib%20only-3776AB?logo=python&logoColor=white)
+
+A tiny self-hosted README badge showing your AI coding usage: **live Claude &
+Codex subscription limits** plus **estimated tokens and cost** across all your
+agents — Claude Code, Codex, Ollama, and anything you add. One Cloudflare
+Worker (free tier), stdlib-only Python collectors, no dependencies.
+
+**Live demo** — this is a real badge, updating every 30 min:
+
+![usage badge](https://usage-badge.stockgenie.workers.dev/badge.svg)
 
 Data sources, each using the cleanest available method (no scraping):
 
@@ -15,8 +24,6 @@ Data sources, each using the cleanest available method (no scraping):
   Ollama Cloud has no usage API (see below).
 
 Full design + security + edge cases: [docs/spec.md](docs/spec.md).
-
-![usage badge](https://usage-badge.stockgenie.workers.dev/badge.svg)
 
 ## How it works
 
