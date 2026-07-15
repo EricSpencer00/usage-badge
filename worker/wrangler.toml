@@ -1,0 +1,10 @@
+name = "usage-badge"
+main = "worker.js"
+compatibility_date = "2026-07-01"
+
+# Create with: wrangler kv namespace create USAGE   (paste the id below)
+[[kv_namespaces]]
+binding = "USAGE"
+id = "e459bf89a96e437a99c51beab0fbd115"
+
+# Secret (never in this file): wrangler secret put INGEST_TOKEN
