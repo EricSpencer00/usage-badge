@@ -14,7 +14,7 @@ Setup:
 Optional extra agents (ollama, claude api, ...): ~/.config/usage-badge/extra.json
   [{"label": "ollama cloud", "tokens": 12345678, "cost_usd": 0}]
 """
-import json, os, subprocess, sys, urllib.request
+import json, os, sys, time, urllib.request
 from pathlib import Path
 
 HOME = Path.home()
@@ -120,46 +120,65 @@ def codex_totals():
             "cost_usd": round(tokens * pi / 1e6, 2)} if tokens else None
 
 # --- Claude subscription usage % via local OAuth credential ------------------
+#
+# Uses the Claude Code login you already have. The access token lives in
+# ~/.claude/.credentials.json and expires every ~8h; when it's expired we
+# refresh it with the stored refresh token (the same flow Claude Code uses) and
+# write the rotated tokens back to that same file so Claude Code stays in sync.
+# Endpoints/client id are Claude Code's own. Nothing here runs a model — the
+# usage endpoint is a read-only reporting call that costs zero tokens.
+
+CLAUDE_CRED = HOME / ".claude" / ".credentials.json"
+CLAUDE_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+CLAUDE_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
+CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+UA = "usage-badge-collector/1.0 (claude-cli-compatible)"
+
+def _valid_access_token():
+    """Return a currently-valid Claude access token, refreshing if needed."""
+    try:
+        creds = json.loads(CLAUDE_CRED.read_text())
+        o = creds["claudeAiOauth"]
+    except Exception:
+        return None
+    if o.get("expiresAt", 0) > time.time() * 1000 + 60_000:
+        return o["accessToken"]  # still valid
+    refresh = o.get("refreshToken")
+    if not refresh:
+        return None  # can't refresh; caller degrades gracefully
+    body = json.dumps({"grant_type": "refresh_token", "refresh_token": refresh,
+                       "client_id": CLAUDE_CLIENT_ID}).encode()
+    req = urllib.request.Request(CLAUDE_TOKEN_URL, data=body,
+                                 headers={"Content-Type": "application/json",
+                                          "Accept": "application/json", "User-Agent": UA})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            tok = json.load(r)
+    except Exception:
+        return None
+    o["accessToken"] = tok["access_token"]
+    if tok.get("refresh_token"):
+        o["refreshToken"] = tok["refresh_token"]
+    o["expiresAt"] = int(time.time() * 1000) + int(tok.get("expires_in", 28800)) * 1000
+    tmp = CLAUDE_CRED.with_suffix(".usage-badge.tmp")  # atomic write-back, 0600
+    tmp.write_text(json.dumps(creds))
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, CLAUDE_CRED)
+    return o["accessToken"]
 
 def claude_sub_usage():
-    token = None
-    try:  # macOS keychain first, then credentials file
-        out = subprocess.run(
-            ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
-            capture_output=True, text=True, timeout=10)
-        if out.returncode == 0:
-            token = json.loads(out.stdout)["claudeAiOauth"]["accessToken"]
-    except Exception:
-        pass
+    token = _valid_access_token()
     if not token:
-        try:
-            creds = json.loads((HOME / ".claude" / ".credentials.json").read_text())
-            token = creds["claudeAiOauth"]["accessToken"]
-        except Exception:
-            return None, None
+        return None, None
     req = urllib.request.Request(
-        "https://api.anthropic.com/api/oauth/usage",
+        CLAUDE_USAGE_URL,
         headers={"Authorization": f"Bearer {token}",
-                 "anthropic-beta": "oauth-2025-04-20"})
+                 "anthropic-beta": "oauth-2025-04-20", "User-Agent": UA})
     try:
         with urllib.request.urlopen(req, timeout=15) as r:
             d = json.load(r)
-        five = wk = None
-        for w in [d.get("five_hour"), *(d.get("rate_limits") or [])]:
-            if not isinstance(w, dict):
-                continue
-            u = w.get("utilization")
-            wt = w.get("window") or w.get("name") or ""
-            if u is None:
-                continue
-            if "five" in str(wt) or w is d.get("five_hour"):
-                five = u
-            elif "seven" in str(wt) or "week" in str(wt):
-                wk = max(wk or 0, u)
-        if five is None and isinstance(d.get("five_hour"), dict):
-            five = d["five_hour"].get("utilization")
-        if wk is None and isinstance(d.get("seven_day"), dict):
-            wk = d["seven_day"].get("utilization")
+        five = (d.get("five_hour") or {}).get("utilization")
+        wk = (d.get("seven_day") or {}).get("utilization")
         return five, wk
     except Exception:
         return None, None
@@ -214,7 +233,7 @@ def main():
             return
         except urllib.error.HTTPError as e:
             if e.code == 429 and attempt == 1:
-                import time; time.sleep(65)
+                time.sleep(65)
                 continue
             raise
 
