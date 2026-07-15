@@ -84,15 +84,21 @@ def claude_code_totals(cache):
         tokens += ft; cost += fc
     return {"label": "claude code", "tokens": int(tokens), "cost_usd": round(cost, 2)}
 
-# --- Codex: cumulative totals + rate limits from session logs ---------------
+# --- Codex: cumulative token totals from session logs -----------------------
+#
+# NOTE: Codex does NOT expose a reliable live subscription-usage figure. The
+# rate_limits in the session logs are per-session snapshots piggybacked on
+# inference responses — they go stale the moment a session ends, the windows
+# (5h/weekly) don't match what the CLI shows (monthly on some plans), and the
+# freshest record is often null. Presenting them as "current" would be lying,
+# so we deliberately DON'T. Only cumulative token totals (which are accurate)
+# are reported. Live Codex usage lives at chatgpt.com/codex/settings/usage.
 
 def codex_totals():
     root = HOME / ".codex" / "sessions"
     if not root.is_dir():
-        return None, (None, None)
+        return None
     tokens = 0
-    ts5, tsw = "", ""
-    five = week = None
     for f in root.rglob("*.jsonl"):
         last = None
         try:
@@ -106,22 +112,12 @@ def codex_totals():
             continue
         try:
             d = json.loads(last)
-            info = d["payload"]["info"]
-            tokens += info["total_token_usage"]["total_tokens"]
-            ts = d.get("timestamp", "")
-            rl = d["payload"].get("rate_limits") or {}
-            p, s = rl.get("primary") or {}, rl.get("secondary") or {}
-            if ts > ts5 and p.get("used_percent") is not None:
-                ts5, five = ts, p["used_percent"]
-            if ts > tsw and s.get("used_percent") is not None:
-                tsw, week = ts, s["used_percent"]
+            tokens += d["payload"]["info"]["total_token_usage"]["total_tokens"]
         except (KeyError, TypeError, json.JSONDecodeError):
             continue
-    pi, po, _, pcr = price_for("gpt-5")
-    # only cumulative totals available; rough est using input price
-    agent = {"label": "codex", "tokens": int(tokens),
-             "cost_usd": round(tokens * pi / 1e6, 2)} if tokens else None
-    return agent, (five, week)
+    pi, _, _, _ = price_for("gpt-5")
+    return {"label": "codex", "tokens": int(tokens),
+            "cost_usd": round(tokens * pi / 1e6, 2)} if tokens else None
 
 # --- Claude subscription usage % via local OAuth credential ------------------
 
@@ -180,7 +176,7 @@ def main():
     cc = claude_code_totals(cache)
     if cc:
         agents.append(cc)
-    codex_agent, (codex_5h, codex_wk) = codex_totals()
+    codex_agent = codex_totals()
     if codex_agent:
         agents.append(codex_agent)
     try:
@@ -189,10 +185,12 @@ def main():
     except Exception:
         pass
 
+    # Only Claude exposes a reliable live usage endpoint. Codex intentionally
+    # omitted — see codex_totals() note. codex_* kept as null for schema stability.
     claude_5h, claude_wk = claude_sub_usage()
     payload = {
         "sub": {"claude_5h": claude_5h, "claude_wk": claude_wk,
-                "codex_5h": codex_5h, "codex_wk": codex_wk},
+                "codex_5h": None, "codex_wk": None},
         "agents": agents,
     }
 

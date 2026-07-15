@@ -28,8 +28,8 @@ your machine                      cloudflare                  github
 |---|---|
 | Claude Code tokens/cost | `~/.claude/projects/**/*.jsonl` — sum `message.usage`, dedup by `(message.id, requestId)`, cost from a public pricing table |
 | Codex tokens | `~/.codex/sessions/**/*.jsonl` — last `total_token_usage` per session file (cumulative), summed |
-| Codex 5h/weekly % | same files — most recent `rate_limits.primary/secondary.used_percent` |
-| Claude sub 5h/weekly % | Anthropic OAuth usage endpoint using the local Claude Code credential (macOS Keychain / `.credentials.json`). Read-only; the credential is never uploaded. |
+| Claude sub 5h/weekly % | Anthropic OAuth **usage-reporting** endpoint (`/api/oauth/usage`) using the local Claude Code credential (macOS Keychain / `.credentials.json`). Read-only, zero-cost, never runs a model; the credential is never uploaded. Best-effort: renders only when the stored access token is currently valid (i.e. you're actively on the Claude subscription). |
+| ~~Codex 5h/weekly %~~ | **Intentionally not shown.** Codex only emits rate-limit numbers as per-session snapshots piggybacked on inference responses. They go stale the instant a session ends, the freshest record is often `null`, and the windows (5h/weekly) don't even match what the CLI reports (monthly on Pro/Pro-Lite). There is no clean, read-only live endpoint. Showing a two-week-old snapshot as "current" would be lying, so we don't. Live Codex usage: chatgpt.com/codex/settings/usage. |
 | Other agents (ollama, claude api, …) | optional `extra.json` next to the collector — you fill in numbers however you like |
 
 ## Ingest payload (the only thing that leaves your machine)
@@ -81,9 +81,11 @@ pricing tables; the badge labels them "est".
 
 - **Fresh deploy, no ingest yet** → "no data yet" badge, not an error.
 - **Collector dies / laptop asleep >24 h** → "stale" badge state.
-- **Claude OAuth call fails** (token expired, endpoint change) → sub bars for
-  Claude render as `—`; the rest of the badge still works.
-- **Codex not installed** → its section is omitted entirely.
+- **Claude OAuth call fails** (token expired because you're on Claude API, or
+  endpoint change) → Claude sub bars simply don't render; tokens/cost still do.
+- **Codex not installed** → its token row is omitted entirely.
+- **Codex usage % is unavailable by design** (see data-sources note). We never
+  scrape stale rate-limit snapshots. Only Codex token totals are shown.
 - **Huge token counts** → human formatting (`1.2B`), values clamped to
   sane ranges (pct 0–100, tokens < 1e15, cost < 1e7).
 - **NaN / negative / string-typed numbers in payload** → dropped by the

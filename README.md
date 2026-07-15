@@ -1,9 +1,15 @@
 # usage-badge
 
-A tiny self-hosted README badge showing your AI agent usage: Claude Code and
-Codex subscription window usage (5-hour / weekly %), plus estimated tokens and
-cost across your agents. A toy — one Cloudflare Worker (free tier), one
-stdlib-only Python script, no dependencies anywhere.
+A tiny self-hosted README badge showing your AI agent usage: Claude
+subscription window usage (5-hour / weekly %, when you're on the sub), plus
+estimated tokens and cost across your agents (Claude Code, Codex, and anything
+you add). A toy — one Cloudflare Worker (free tier), one stdlib-only Python
+script, no dependencies anywhere.
+
+> **Why no Codex %?** Codex has no clean live usage endpoint — its rate-limit
+> numbers are stale per-session snapshots on the wrong window. Rather than show
+> misleading data, the badge reports Codex *token totals* only. See
+> [docs/spec.md](docs/spec.md).
 
 ![usage badge](https://usage-badge.stockgenie.workers.dev/badge.svg)
 
