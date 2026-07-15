@@ -209,8 +209,16 @@ def main():
                                  headers={"Authorization": f"Bearer {tok}",
                                           "Content-Type": "application/json",
                                           "User-Agent": "usage-badge-collector/1.0"})
-    with urllib.request.urlopen(req, timeout=15) as r:
-        print(r.status, r.read().decode())
+    for attempt in (1, 2):  # one retry if the worker's 60s write gap hits
+        try:
+            with urllib.request.urlopen(req, timeout=15) as r:
+                print(r.status, r.read().decode())
+            return
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt == 1:
+                import time; time.sleep(65)
+                continue
+            raise
 
 if __name__ == "__main__":
     main()
