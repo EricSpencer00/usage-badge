@@ -63,6 +63,7 @@ async function ingest(request, env) {
 }
 
 function clamp(v, lo, hi) {
+  if (v == null || v === "") return null; // Number(null) is 0 — don't fake zeros
   const n = Number(v);
   return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : null;
 }
