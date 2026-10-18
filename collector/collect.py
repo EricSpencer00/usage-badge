@@ -47,9 +47,11 @@ def claude_code_totals(cache):
     seen = set()
     if not root.is_dir():
         return None
+    live = set()
     for f in root.glob("*/*.jsonl"):
         st = f.stat()
         key = str(f)
+        live.add(key)
         c = cache.get(key)
         if c and c[0] == st.st_size and c[1] == st.st_mtime:
             tokens += c[2]; cost += c[3]
@@ -82,6 +84,12 @@ def claude_code_totals(cache):
             continue
         cache[key] = [st.st_size, st.st_mtime, ft, fc]
         tokens += ft; cost += fc
+    # Claude Code deletes session logs older than cleanupPeriodDays (default
+    # 30), so "all-time" must keep counting files we parsed before they were
+    # pruned. The cache is the only record of those, so never drop its entries.
+    for key, c in cache.items():
+        if key not in live:
+            tokens += c[2]; cost += c[3]
     return {"label": "claude code", "tokens": int(tokens), "cost_usd": round(cost, 2)}
 
 # --- Codex: cumulative token totals from session logs -----------------------
@@ -150,7 +158,9 @@ def _valid_access_token():
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
             tok = json.load(r)
-    except Exception:
+    except Exception as e:
+        print(f"claude token refresh failed: {e!r} (run `claude` and /login "
+              "to re-auth)", file=sys.stderr)
         return None
     o["accessToken"] = tok["access_token"]
     if tok.get("refresh_token"):
@@ -176,7 +186,8 @@ def claude_sub_usage():
         five = (d.get("five_hour") or {}).get("utilization")
         wk = (d.get("seven_day") or {}).get("utilization")
         return five, wk
-    except Exception:
+    except Exception as e:
+        print(f"claude usage fetch failed: {e!r}", file=sys.stderr)
         return None, None
 
 # --- CodexBar: live Codex usage + accurate multi-provider cost --------------
@@ -270,7 +281,9 @@ def main():
     payload = {"sub": sub, "agents": agents[:6]}
 
     CONF.mkdir(parents=True, exist_ok=True)
-    CACHE.write_text(json.dumps(cache))
+    tmp = CACHE.with_suffix(".tmp")  # atomic: cache holds pruned-log history
+    tmp.write_text(json.dumps(cache))
+    os.replace(tmp, CACHE)
 
     if "--dry-run" in sys.argv:
         print(json.dumps(payload, indent=2))
