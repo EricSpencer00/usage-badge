@@ -5,9 +5,15 @@
   <key>Label</key><string>com.usage-badge.collector</string>
   <key>ProgramArguments</key>
   <array>
-    <string>REPLACE_PYTHON</string>
+    <!-- Apple's python3: a Homebrew path breaks when brew upgrades Python -->
+    <string>/usr/bin/python3</string>
     <string>REPLACE_HOME/usage-badge/collector/collect.py</string>
   </array>
+  <!-- launchd's default PATH has no Homebrew, where codexbar and zstd live -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
   <key>StartInterval</key><integer>1800</integer>
   <key>RunAtLoad</key><true/>
   <key>StandardOutPath</key><string>/tmp/usage-badge.log</string>
