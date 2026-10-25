@@ -4,7 +4,8 @@
 Reads local agent logs (read-only), computes aggregate token/cost numbers,
 and POSTs a ~1 KB JSON blob to your Cloudflare Worker. That blob is the ONLY
 data that leaves this machine. Network activity: one optional GET to
-api.anthropic.com (subscription usage %) and one POST to your own worker.
+api.anthropic.com (Claude usage %), CodexBar's own Codex usage call when it is
+installed, and one POST to your own worker.
 
 Setup:
   mkdir -p ~/.config/usage-badge
@@ -48,8 +49,11 @@ def claude_code_totals(cache):
     if not root.is_dir():
         return None
     live = set()
-    for f in root.glob("*/*.jsonl"):
-        st = f.stat()
+    for f in root.rglob("*.jsonl"):  # incl. <session>/subagents/**/agent-*.jsonl
+        try:
+            st = f.stat()
+        except OSError:  # pruned mid-scan
+            continue
         key = str(f)
         live.add(key)
         c = cache.get(key)
@@ -88,7 +92,7 @@ def claude_code_totals(cache):
     # 30), so "all-time" must keep counting files we parsed before they were
     # pruned. The cache is the only record of those, so never drop its entries.
     for key, c in cache.items():
-        if key not in live:
+        if key not in live and not key.startswith("codex:"):
             tokens += c[2]; cost += c[3]
     return {"label": "claude code", "tokens": int(tokens), "cost_usd": round(cost, 2)}
 
@@ -97,49 +101,103 @@ def claude_code_totals(cache):
 # Token totals come from logs (accurate). Codex's *live usage %* is fetched
 # separately via CodexBar's OAuth source (see codex_usage_bars) rather than
 # scraped from the stale per-session rate_limit snapshots in these logs.
+#
+# Codex moves older sessions from sessions/YYYY/MM/DD/ into archived_sessions/,
+# zstd-compressed (.jsonl.zst), and may delete them later. Each session is
+# cached under its own name, so a move doesn't double count and a deletion
+# doesn't shrink the all-time total.
 
-def codex_totals():
-    root = HOME / ".codex" / "sessions"
-    if not root.is_dir():
+def _codex_lines(f):
+    if f.suffix != ".zst":
+        with open(f, errors="replace") as fh:
+            yield from fh
+        return
+    zstd = shutil.which("zstd")  # stdlib has no zstd before Python 3.14
+    if not zstd:
+        return
+    with subprocess.Popen([zstd, "-dcq", str(f)], stdout=subprocess.PIPE,
+                          stderr=subprocess.DEVNULL, text=True,
+                          errors="replace") as p:
+        yield from p.stdout
+
+def codex_totals(cache):
+    roots = [HOME / ".codex" / d for d in ("sessions", "archived_sessions")]
+    if not any(r.is_dir() for r in roots):
         return None
-    tokens = 0
-    for f in root.rglob("*.jsonl"):
+    if not shutil.which("zstd"):
+        print("zstd not found; skipping archived Codex sessions", file=sys.stderr)
+    for f in (f for r in roots if r.is_dir() for f in r.rglob("*.jsonl*")):
+        if f.suffix not in (".jsonl", ".zst"):
+            continue
+        try:
+            st = f.stat()
+        except OSError:  # archived (renamed to .zst) mid-scan
+            continue
+        key = "codex:" + f.name.removesuffix(".zst")
+        c = cache.get(key)
+        if c and c[0] == st.st_size and c[1] == st.st_mtime:
+            continue
         last = None
         try:
-            with open(f, errors="replace") as fh:
-                for line in fh:
-                    if '"token_count"' in line:
-                        last = line
+            for line in _codex_lines(f):
+                if '"token_count"' in line:
+                    last = line
         except OSError:
             continue
         if not last:
             continue
         try:
             d = json.loads(last)
-            tokens += d["payload"]["info"]["total_token_usage"]["total_tokens"]
+            n = d["payload"]["info"]["total_token_usage"]["total_tokens"]
         except (KeyError, TypeError, json.JSONDecodeError):
             continue
+        cache[key] = [st.st_size, st.st_mtime, n, 0]
+    tokens = sum(c[2] for k, c in cache.items() if k.startswith("codex:"))
     pi, _, _, _ = price_for("gpt-5")
     return {"label": "codex", "tokens": int(tokens),
             "cost_usd": round(tokens * pi / 1e6, 2)} if tokens else None
 
 # --- Claude subscription usage % via local OAuth credential ------------------
 #
-# Uses the Claude Code login you already have. The access token lives in
-# ~/.claude/.credentials.json and expires every ~8h; when it's expired we
-# refresh it with the stored refresh token (the same flow Claude Code uses) and
-# write the rotated tokens back to that same file so Claude Code stays in sync.
-# Endpoints/client id are Claude Code's own. Nothing here runs a model — the
-# usage endpoint is a read-only reporting call that costs zero tokens.
+# Uses the Claude Code login you already have. On macOS Claude Code keeps it in
+# the login Keychain ("Claude Code-credentials"); any ~/.claude/.credentials.json
+# there is a stale leftover, so the Keychain wins. We only read it: Claude Code
+# refreshes it itself, and rotating its refresh token from here would log out
+# every running Claude Code session. Elsewhere the login lives in
+# ~/.claude/.credentials.json; when that access token (~8h) has expired we
+# refresh it (the same flow Claude Code uses) and write the rotated tokens back
+# so Claude Code stays in sync. Endpoints/client id are Claude Code's own.
+# Nothing here runs a model — the usage endpoint is a read-only reporting call
+# that costs zero tokens.
 
 CLAUDE_CRED = HOME / ".claude" / ".credentials.json"
+CLAUDE_KEYCHAIN = "Claude Code-credentials"
 CLAUDE_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 CLAUDE_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 UA = "usage-badge-collector/1.0 (claude-cli-compatible)"
 
+def _keychain_oauth():
+    """Claude Code's OAuth blob from the macOS Keychain, or None."""
+    if sys.platform != "darwin" or not shutil.which("security"):
+        return None
+    try:
+        out = subprocess.run(["security", "find-generic-password", "-s",
+                              CLAUDE_KEYCHAIN, "-w"],
+                             capture_output=True, text=True, timeout=15)
+        return json.loads(out.stdout)["claudeAiOauth"] if out.returncode == 0 else None
+    except Exception:
+        return None
+
 def _valid_access_token():
     """Return a currently-valid Claude access token, refreshing if needed."""
+    o = _keychain_oauth()
+    if o is not None:
+        if o.get("expiresAt", 0) > time.time() * 1000 + 60_000:
+            return o["accessToken"]
+        print("claude keychain token expired; Claude Code renews it on its next "
+              "run", file=sys.stderr)
+        return None
     try:
         creds = json.loads(CLAUDE_CRED.read_text())
         o = creds["claudeAiOauth"]
@@ -201,13 +259,21 @@ def claude_sub_usage():
 def _codexbar():
     return shutil.which("codexbar")
 
-def _run_codexbar(args, timeout=30):
-    try:
-        out = subprocess.run([_codexbar(), *args], capture_output=True,
-                             text=True, timeout=timeout)
-        return json.loads(out.stdout) if out.returncode == 0 and out.stdout.strip() else None
-    except Exception:
-        return None
+def _run_codexbar(args, timeout=60):
+    # The first call after a long idle refreshes CodexBar's OAuth token and can
+    # be slow or fail transiently, so retry once before dropping the bars.
+    for attempt in (1, 2):
+        try:
+            out = subprocess.run([_codexbar(), *args], capture_output=True,
+                                 text=True, timeout=timeout)
+            if out.returncode == 0 and out.stdout.strip():
+                return json.loads(out.stdout)
+            err = f"exit {out.returncode}: {out.stderr.strip()[:200]}"
+        except Exception as e:
+            err = repr(e)
+        print(f"codexbar {args[0]} failed (attempt {attempt}): {err}",
+              file=sys.stderr)
+    return None
 
 _WINDOW_LABEL = {300: "5h", 1440: "day", 10080: "wk", 43200: "mo"}
 
@@ -255,8 +321,8 @@ def main():
     # so the stdlib parser is the primary source here; CodexBar is used only for
     # live Codex usage % below (the one thing it does that logs can't).
     agents = []
-    for fn in (lambda: claude_code_totals(cache), codex_totals):
-        a = fn()
+    for fn in (claude_code_totals, codex_totals):
+        a = fn(cache)
         if a:
             agents.append(a)
     oa = ollama_agent()
